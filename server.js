@@ -165,15 +165,64 @@ function sendEmail(to, deviceName, htmlBody) {
 }
 
 function sendTelegram(chatId, text) {
-  if (!TELEGRAM_BOT_TOKEN) return;
+  if (!TELEGRAM_BOT_TOKEN || !chatId) return;
   const body = JSON.stringify({ chat_id: chatId, text: text });
   const req = https.request({
     hostname: 'api.telegram.org',
     path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': body.length }
-  }, (res) => console.log('Telegram sent, status:', res.statusCode));
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, (res) => console.log('Telegram text sent, status:', res.statusCode));
   req.on('error', (e) => console.error('Telegram error:', e.message));
   req.write(body);
   req.end();
+}
+
+function sendTelegramPhoto(chatId, base64Data, caption) {
+  if (!TELEGRAM_BOT_TOKEN || !chatId) return;
+  try {
+    // Remove data:image/jpeg;base64, prefix
+    const b64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
+    const imageBuffer = Buffer.from(b64, 'base64');
+
+    const boundary = '----FormBoundary' + Date.now();
+    const captionText = caption || '';
+
+    let body = '';
+    body += `--${boundary}\r\n`;
+    body += `Content-Disposition: form-data; name="chat_id"\r\n\r\n`;
+    body += `${chatId}\r\n`;
+    body += `--${boundary}\r\n`;
+    body += `Content-Disposition: form-data; name="caption"\r\n\r\n`;
+    body += `${captionText}\r\n`;
+    body += `--${boundary}\r\n`;
+    body += `Content-Disposition: form-data; name="photo"; filename="photo.jpg"\r\n`;
+    body += `Content-Type: image/jpeg\r\n\r\n`;
+
+    const bodyStart = Buffer.from(body, 'utf8');
+    const bodyEnd = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+    const totalBuffer = Buffer.concat([bodyStart, imageBuffer, bodyEnd]);
+
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': totalBuffer.length
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) console.log('Telegram photo sent to:', chatId);
+        else console.error('Telegram photo error:', data);
+      });
+    });
+    req.on('error', (e) => console.error('Telegram photo error:', e.message));
+    req.write(totalBuffer);
+    req.end();
+  } catch(e) {
+    console.error('Telegram photo exception:', e.message);
+  }
 }
