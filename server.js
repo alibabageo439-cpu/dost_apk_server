@@ -68,20 +68,27 @@ wss.on('connection', (ws) => {
 
         if (dev && dev.autoMode) {
           const time = new Date().toLocaleString();
+          console.log('Auto mode data:', msg.type, '| device:', dev.name, '| telegram:', dev.telegram, '| email:', dev.email);
 
           if (msg.type === 'location') {
             const mapsLink = 'https://maps.google.com/?q=' + msg.lat + ',' + msg.lng;
             const text = 'DOST Alert!\nDevice: ' + dev.name + '\nLocation: ' + mapsLink + '\nTime: ' + time;
             if (dev.telegram) sendTelegram(dev.telegram, text);
+            else console.log('No telegram for', dev.name);
             if (dev.email) sendEmail(dev.email, dev.name,
               '<h2>DOST Location</h2><p>Device: ' + dev.name + '</p><p>Time: ' + time + '</p><p><a href="' + mapsLink + '">' + mapsLink + '</a></p>');
+            else console.log('No email for', dev.name);
           }
 
-          if (msg.type === 'photo-front' && dev.telegram) {
-            sendTelegramPhoto(dev.telegram, msg.value, 'DOST Front Camera\n' + dev.name + '\n' + time);
+          if (msg.type === 'photo-front') {
+            if (dev.telegram) sendTelegramPhoto(dev.telegram, msg.value, 'DOST Front Camera\n' + dev.name + '\n' + time);
+            else console.log('No telegram for photo-front');
+            if (dev.email) sendEmailPhoto(dev.email, dev.name, msg.value, 'Front Camera', time);
           }
-          if (msg.type === 'photo-back' && dev.telegram) {
-            sendTelegramPhoto(dev.telegram, msg.value, 'DOST Back Camera\n' + dev.name + '\n' + time);
+          if (msg.type === 'photo-back') {
+            if (dev.telegram) sendTelegramPhoto(dev.telegram, msg.value, 'DOST Back Camera\n' + dev.name + '\n' + time);
+            else console.log('No telegram for photo-back');
+            if (dev.email) sendEmailPhoto(dev.email, dev.name, msg.value, 'Back Camera', time);
           }
         }
       }
@@ -139,7 +146,7 @@ function sendTelegram(chatId, text) {
       'Content-Length': Buffer.byteLength(body)
     }
   }, (res) => console.log('Telegram text sent, status:', res.statusCode));
-  req.on('error', e => console.error('Telegram error:', e.message));
+  req.on('error', e => console.error('Telegram error:', e.message, e.code));
   req.write(body);
   req.end();
 }
@@ -175,7 +182,7 @@ function sendTelegramPhoto(chatId, base64Data, caption) {
         else console.error('Telegram photo failed:', res.statusCode, d.substring(0,100));
       });
     });
-    req.on('error', e => console.error('Telegram photo error:', e.message));
+    req.on('error', e => console.error('Telegram photo error:', e.message, e.code));
     req.write(body);
     req.end();
   } catch(e) {
@@ -208,10 +215,10 @@ function sendEmail(to, deviceName, htmlBody) {
     res.on('data', c => d += c);
     res.on('end', () => {
       if (res.statusCode === 200 || res.statusCode === 201) console.log('Email sent to:', to);
-      else console.error('Email error:', res.statusCode, d.substring(0,100));
+      else console.error('Email error status:', res.statusCode, 'body:', d);
     });
   });
-  req.on('error', e => console.error('Email error:', e.message));
+  req.on('error', e => console.error('Email request error:', e.message, e.code));
   req.write(data);
   req.end();
 }
