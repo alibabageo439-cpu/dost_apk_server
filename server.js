@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
-const nodemailer = require('nodemailer');
 const https = require('https');
+const http = require('http');
 
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: PORT });
@@ -145,23 +145,29 @@ function safeSend(ws, data) {
 }
 
 function sendEmail(to, deviceName, htmlBody) {
-  if (!transporter) {
-    console.log('Email skip - transporter not ready');
-    return;
-  }
-  if (!to) {
-    console.log('Email skip - no recipient');
-    return;
-  }
-  transporter.sendMail({
-    from: GMAIL_USER,
-    to: to,
+  if (!SENDGRID_KEY || !to) return;
+  const data = JSON.stringify({
+    personalizations: [{ to: [{ email: to }] }],
+    from: { email: GMAIL_USER || 'noreply@dost.app' },
     subject: 'DOST Alert — ' + deviceName,
-    html: htmlBody
-  }, (err, info) => {
-    if (err) console.error('Email send error:', err.message);
-    else console.log('Email sent OK to:', to, info.messageId);
+    content: [{ type: 'text/html', value: htmlBody }]
   });
+  const req = https.request({
+    hostname: 'api.sendgrid.com',
+    path: '/v3/mail/send',
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + SENDGRID_KEY,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data)
+    }
+  }, (res) => {
+    if (res.statusCode === 202) console.log('Email sent to:', to);
+    else console.error('Email error status:', res.statusCode);
+  });
+  req.on('error', (e) => console.error('Email error:', e.message));
+  req.write(data);
+  req.end();
 }
 
 function sendTelegram(chatId, text) {
@@ -181,46 +187,50 @@ function sendTelegram(chatId, text) {
 function sendTelegramPhoto(chatId, base64Data, caption) {
   if (!TELEGRAM_BOT_TOKEN || !chatId) return;
   try {
-    // Remove data:image/jpeg;base64, prefix
     const b64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
     const imageBuffer = Buffer.from(b64, 'base64');
+    const boundary = 'boundary' + Date.now();
+    const captionText = (caption || '').substring(0, 200);
 
-    const boundary = '----FormBoundary' + Date.now();
-    const captionText = caption || '';
+    const parts = [];
+    parts.push(Buffer.from(
+      '--' + boundary + '\r\n' +
+      'Content-Disposition: form-data; name="chat_id"\r\n\r\n' +
+      chatId + '\r\n'
+    ));
+    parts.push(Buffer.from(
+      '--' + boundary + '\r\n' +
+      'Content-Disposition: form-data; name="caption"\r\n\r\n' +
+      captionText + '\r\n'
+    ));
+    parts.push(Buffer.from(
+      '--' + boundary + '\r\n' +
+      'Content-Disposition: form-data; name="photo"; filename="photo.jpg"\r\n' +
+      'Content-Type: image/jpeg\r\n\r\n'
+    ));
+    parts.push(imageBuffer);
+    parts.push(Buffer.from('\r\n--' + boundary + '--\r\n'));
 
-    let body = '';
-    body += `--${boundary}\r\n`;
-    body += `Content-Disposition: form-data; name="chat_id"\r\n\r\n`;
-    body += `${chatId}\r\n`;
-    body += `--${boundary}\r\n`;
-    body += `Content-Disposition: form-data; name="caption"\r\n\r\n`;
-    body += `${captionText}\r\n`;
-    body += `--${boundary}\r\n`;
-    body += `Content-Disposition: form-data; name="photo"; filename="photo.jpg"\r\n`;
-    body += `Content-Type: image/jpeg\r\n\r\n`;
-
-    const bodyStart = Buffer.from(body, 'utf8');
-    const bodyEnd = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-    const totalBuffer = Buffer.concat([bodyStart, imageBuffer, bodyEnd]);
+    const body = Buffer.concat(parts);
 
     const req = https.request({
       hostname: 'api.telegram.org',
-      path: `/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+      path: '/bot' + TELEGRAM_BOT_TOKEN + '/sendPhoto',
       method: 'POST',
       headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': totalBuffer.length
+        'Content-Type': 'multipart/form-data; boundary=' + boundary,
+        'Content-Length': body.length
       }
     }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
+      let d = '';
+      res.on('data', c => d += c);
       res.on('end', () => {
         if (res.statusCode === 200) console.log('Telegram photo sent to:', chatId);
-        else console.error('Telegram photo error:', data);
+        else console.error('Telegram photo failed:', res.statusCode, d.substring(0,100));
       });
     });
-    req.on('error', (e) => console.error('Telegram photo error:', e.message));
-    req.write(totalBuffer);
+    req.on('error', e => console.error('Telegram photo error:', e.message));
+    req.write(body);
     req.end();
   } catch(e) {
     console.error('Telegram photo exception:', e.message);
