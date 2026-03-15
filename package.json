@@ -6,7 +6,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.14.2",
-    "nodemailer": "^6.9.7"
+    "ws": "^8.14.2"
   }
 }
