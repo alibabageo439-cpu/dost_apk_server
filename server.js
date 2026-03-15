@@ -6,14 +6,14 @@ const wss = new WebSocket.Server({ port: PORT });
 
 const GMAIL_USER = process.env.GMAIL_USER || '';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
-const SENDGRID_KEY = process.env.SENDGRID_KEY || '';
+const RESEND_KEY = process.env.RESEND_KEY || '';
 
 const admins = new Set();
 const devices = new Map();
 
 console.log('DOST Server running on port', PORT);
 console.log('Telegram:', TELEGRAM_BOT_TOKEN ? 'YES' : 'NO');
-console.log('SendGrid:', SENDGRID_KEY ? 'YES' : 'NO');
+console.log('Resend:', RESEND_KEY ? 'YES' : 'NO');
 
 wss.on('connection', (ws) => {
   let clientId = null;
@@ -184,28 +184,32 @@ function sendTelegramPhoto(chatId, base64Data, caption) {
 }
 
 function sendEmail(to, deviceName, htmlBody) {
-  if (!SENDGRID_KEY || !to) {
-    console.log('Email skip - no SendGrid key or recipient');
+  if (!RESEND_KEY || !to) {
+    console.log('Email skip - no Resend key or recipient');
     return;
   }
   const data = JSON.stringify({
-    personalizations: [{ to: [{ email: to }] }],
-    from: { email: GMAIL_USER || 'noreply@dost.app' },
+    from: 'DOST Alert <onboarding@resend.dev>',
+    to: [to],
     subject: 'DOST Alert — ' + deviceName,
-    content: [{ type: 'text/html', value: htmlBody }]
+    html: htmlBody
   });
   const req = https.request({
-    hostname: 'api.sendgrid.com',
-    path: '/v3/mail/send',
+    hostname: 'api.resend.com',
+    path: '/emails',
     method: 'POST',
     headers: {
-      'Authorization': 'Bearer ' + SENDGRID_KEY,
+      'Authorization': 'Bearer ' + RESEND_KEY,
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(data)
     }
   }, (res) => {
-    if (res.statusCode === 202) console.log('Email sent to:', to);
-    else console.error('Email error status:', res.statusCode);
+    let d = '';
+    res.on('data', c => d += c);
+    res.on('end', () => {
+      if (res.statusCode === 200 || res.statusCode === 201) console.log('Email sent to:', to);
+      else console.error('Email error:', res.statusCode, d.substring(0,100));
+    });
   });
   req.on('error', e => console.error('Email error:', e.message));
   req.write(data);
