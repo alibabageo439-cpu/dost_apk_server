@@ -145,15 +145,22 @@ function safeSend(ws, data) {
 }
 
 function sendEmail(to, deviceName, htmlBody) {
-  if (!transporter) return;
+  if (!transporter) {
+    console.log('Email skip - transporter not ready');
+    return;
+  }
+  if (!to) {
+    console.log('Email skip - no recipient');
+    return;
+  }
   transporter.sendMail({
     from: GMAIL_USER,
     to: to,
-    subject: `DOST Alert — ${deviceName}`,
+    subject: 'DOST Alert — ' + deviceName,
     html: htmlBody
-  }, (err) => {
-    if (err) console.error('Email error:', err.message);
-    else console.log('Email sent to:', to);
+  }, (err, info) => {
+    if (err) console.error('Email send error:', err.message);
+    else console.log('Email sent OK to:', to, info.messageId);
   });
 }
 
