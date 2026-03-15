@@ -37,7 +37,6 @@ wss.on('connection', (ws) => {
           });
         });
         console.log('Admin connected');
-
       } else if (msg.role === 'device') {
         clientRole = 'device';
         clientId = msg.deviceId || ('device_' + Date.now());
@@ -60,7 +59,6 @@ wss.on('connection', (ws) => {
       }
     }
 
-    // Device → Admin
     if (clientRole === 'device' && clientId) {
       const dev = devices.get(clientId);
       if (['photo-front','photo-back','location','alert','audio-data','status'].includes(msg.type)) {
@@ -68,33 +66,28 @@ wss.on('connection', (ws) => {
 
         if (dev && dev.autoMode) {
           const time = new Date().toLocaleString();
-          console.log('Auto mode data:', msg.type, '| device:', dev.name, '| telegram:', dev.telegram, '| email:', dev.email);
+          console.log('Auto mode:', msg.type, '| device:', dev.name, '| telegram:', dev.telegram, '| email:', dev.email);
 
           if (msg.type === 'location') {
             const mapsLink = 'https://maps.google.com/?q=' + msg.lat + ',' + msg.lng;
-            const text = 'DOST Alert!\nDevice: ' + dev.name + '\nLocation: ' + mapsLink + '\nTime: ' + time;
-            if (dev.telegram) sendTelegram(dev.telegram, text);
-            else console.log('No telegram for', dev.name);
+            if (dev.telegram) sendTelegram(dev.telegram, 'DOST Alert!\nDevice: ' + dev.name + '\nLocation: ' + mapsLink + '\nTime: ' + time);
             if (dev.email) sendEmail(dev.email, dev.name,
-              '<h2>DOST Location</h2><p>Device: ' + dev.name + '</p><p>Time: ' + time + '</p><p><a href="' + mapsLink + '">' + mapsLink + '</a></p>');
-            else console.log('No email for', dev.name);
+              '<h2>DOST Location</h2><p><b>Device:</b> ' + dev.name + '</p><p><b>Time:</b> ' + time + '</p><p><a href="' + mapsLink + '">' + mapsLink + '</a></p>');
           }
 
           if (msg.type === 'photo-front') {
             if (dev.telegram) sendTelegramPhoto(dev.telegram, msg.value, 'DOST Front Camera\n' + dev.name + '\n' + time);
-            else console.log('No telegram for photo-front');
             if (dev.email) sendEmailPhoto(dev.email, dev.name, msg.value, 'Front Camera', time);
           }
+
           if (msg.type === 'photo-back') {
             if (dev.telegram) sendTelegramPhoto(dev.telegram, msg.value, 'DOST Back Camera\n' + dev.name + '\n' + time);
-            else console.log('No telegram for photo-back');
             if (dev.email) sendEmailPhoto(dev.email, dev.name, msg.value, 'Back Camera', time);
           }
         }
       }
     }
 
-    // Admin → Device
     if (clientRole === 'admin') {
       if (msg.type === 'command' && msg.target) {
         const dev = devices.get(msg.target);
@@ -146,7 +139,7 @@ function sendTelegram(chatId, text) {
       'Content-Length': Buffer.byteLength(body)
     }
   }, (res) => console.log('Telegram text sent, status:', res.statusCode));
-  req.on('error', e => console.error('Telegram error:', e.message, e.code));
+  req.on('error', e => console.error('Telegram error:', e.message));
   req.write(body);
   req.end();
 }
@@ -179,10 +172,10 @@ function sendTelegramPhoto(chatId, base64Data, caption) {
       res.on('data', c => d += c);
       res.on('end', () => {
         if (res.statusCode === 200) console.log('Telegram photo sent to:', chatId);
-        else console.error('Telegram photo failed:', res.statusCode, d.substring(0,100));
+        else console.error('Telegram photo failed:', res.statusCode, d.substring(0,200));
       });
     });
-    req.on('error', e => console.error('Telegram photo error:', e.message, e.code));
+    req.on('error', e => console.error('Telegram photo error:', e.message));
     req.write(body);
     req.end();
   } catch(e) {
@@ -191,10 +184,7 @@ function sendTelegramPhoto(chatId, base64Data, caption) {
 }
 
 function sendEmail(to, deviceName, htmlBody) {
-  if (!RESEND_KEY || !to) {
-    console.log('Email skip - no Resend key or recipient');
-    return;
-  }
+  if (!RESEND_KEY || !to) return;
   const data = JSON.stringify({
     from: 'DOST Alert <onboarding@resend.dev>',
     to: [to],
@@ -214,11 +204,45 @@ function sendEmail(to, deviceName, htmlBody) {
     let d = '';
     res.on('data', c => d += c);
     res.on('end', () => {
-      if (res.statusCode === 200 || res.statusCode === 201) console.log('Email sent to:', to);
-      else console.error('Email error status:', res.statusCode, 'body:', d);
+      if ([200,201,202].includes(res.statusCode)) console.log('Email sent to:', to);
+      else console.error('Email error:', res.statusCode, d.substring(0,100));
     });
   });
-  req.on('error', e => console.error('Email request error:', e.message, e.code));
+  req.on('error', e => console.error('Email error:', e.message));
+  req.write(data);
+  req.end();
+}
+
+function sendEmailPhoto(to, deviceName, base64Data, cameraType, time) {
+  if (!RESEND_KEY || !to) return;
+  const html = '<h2>DOST ' + cameraType + '</h2>' +
+    '<p><b>Device:</b> ' + deviceName + '</p>' +
+    '<p><b>Time:</b> ' + time + '</p>' +
+    '<img src="' + base64Data + '" style="max-width:100%;border-radius:8px"/>';
+  const data = JSON.stringify({
+    from: 'DOST Alert <onboarding@resend.dev>',
+    to: [to],
+    subject: 'DOST ' + cameraType + ' — ' + deviceName,
+    html: html
+  });
+  const req = https.request({
+    hostname: 'api.resend.com',
+    path: '/emails',
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + RESEND_KEY,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data)
+    }
+  }, (res) => {
+    let d = '';
+    res.on('data', c => d += c);
+    res.on('end', () => {
+      if ([200,201,202].includes(res.statusCode)) console.log('Photo email sent to:', to);
+      else console.error('Photo email error:', res.statusCode, d.substring(0,100));
+    });
+  });
+  req.on('error', e => console.error('Photo email error:', e.message));
   req.write(data);
   req.end();
 }
