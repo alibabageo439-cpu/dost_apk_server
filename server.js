@@ -1,27 +1,19 @@
 const WebSocket = require('ws');
 const https = require('https');
-const http = require('http');
 
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: PORT });
 
 const GMAIL_USER = process.env.GMAIL_USER || '';
-const GMAIL_PASS = process.env.GMAIL_PASS || '';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const SENDGRID_KEY = process.env.SENDGRID_KEY || '';
 
 const admins = new Set();
 const devices = new Map();
 
 console.log('DOST Server running on port', PORT);
-
-// Email transporter
-let transporter = null;
-if (GMAIL_USER && GMAIL_PASS) {
-  transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: GMAIL_USER, pass: GMAIL_PASS }
-  });
-}
+console.log('Telegram:', TELEGRAM_BOT_TOKEN ? 'YES' : 'NO');
+console.log('SendGrid:', SENDGRID_KEY ? 'YES' : 'NO');
 
 wss.on('connection', (ws) => {
   let clientId = null;
@@ -74,30 +66,22 @@ wss.on('connection', (ws) => {
       if (['photo-front','photo-back','location','alert','audio-data','status'].includes(msg.type)) {
         broadcastToAdmins({ ...msg, deviceId: clientId });
 
-        // Auto send email + telegram when auto mode on
         if (dev && dev.autoMode) {
+          const time = new Date().toLocaleString();
+
           if (msg.type === 'location') {
-            const lat = msg.lat;
-            const lng = msg.lng;
-            const mapsLink = `https://maps.google.com/?q=${lat},${lng}`;
-            const time = new Date().toLocaleString();
+            const mapsLink = 'https://maps.google.com/?q=' + msg.lat + ',' + msg.lng;
+            const text = 'DOST Alert!\nDevice: ' + dev.name + '\nLocation: ' + mapsLink + '\nTime: ' + time;
+            if (dev.telegram) sendTelegram(dev.telegram, text);
+            if (dev.email) sendEmail(dev.email, dev.name,
+              '<h2>DOST Location</h2><p>Device: ' + dev.name + '</p><p>Time: ' + time + '</p><p><a href="' + mapsLink + '">' + mapsLink + '</a></p>');
+          }
 
-            // Send to device owner email
-            if (dev.email) {
-              sendEmail(dev.email, dev.name, `
-                <h2>DOST Location Update</h2>
-                <p><b>Device:</b> ${dev.name}</p>
-                <p><b>Time:</b> ${time}</p>
-                <p><b>Location:</b> <a href="${mapsLink}">${mapsLink}</a></p>
-              `);
-            }
-
-            // Send to device owner telegram
-            if (dev.telegram) {
-              sendTelegram(dev.telegram,
-                `DOST Alert!\nDevice: ${dev.name}\nLocation: ${mapsLink}\nTime: ${time}`
-              );
-            }
+          if (msg.type === 'photo-front' && dev.telegram) {
+            sendTelegramPhoto(dev.telegram, msg.value, 'DOST Front Camera\n' + dev.name + '\n' + time);
+          }
+          if (msg.type === 'photo-back' && dev.telegram) {
+            sendTelegramPhoto(dev.telegram, msg.value, 'DOST Back Camera\n' + dev.name + '\n' + time);
           }
         }
       }
@@ -123,7 +107,6 @@ wss.on('connection', (ws) => {
       const dev = devices.get(clientId);
       if (dev) dev.ws = null;
       broadcastToAdmins({ type: 'device-disconnected', deviceId: clientId });
-      // Keep in map for 30s for reconnect
       setTimeout(() => {
         const d = devices.get(clientId);
         if (d && !d.ws) devices.delete(clientId);
@@ -144,42 +127,19 @@ function safeSend(ws, data) {
   catch(e) { console.error('Send error:', e.message); }
 }
 
-function sendEmail(to, deviceName, htmlBody) {
-  if (!SENDGRID_KEY || !to) return;
-  const data = JSON.stringify({
-    personalizations: [{ to: [{ email: to }] }],
-    from: { email: GMAIL_USER || 'noreply@dost.app' },
-    subject: 'DOST Alert — ' + deviceName,
-    content: [{ type: 'text/html', value: htmlBody }]
-  });
-  const req = https.request({
-    hostname: 'api.sendgrid.com',
-    path: '/v3/mail/send',
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + SENDGRID_KEY,
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(data)
-    }
-  }, (res) => {
-    if (res.statusCode === 202) console.log('Email sent to:', to);
-    else console.error('Email error status:', res.statusCode);
-  });
-  req.on('error', (e) => console.error('Email error:', e.message));
-  req.write(data);
-  req.end();
-}
-
 function sendTelegram(chatId, text) {
   if (!TELEGRAM_BOT_TOKEN || !chatId) return;
   const body = JSON.stringify({ chat_id: chatId, text: text });
   const req = https.request({
     hostname: 'api.telegram.org',
-    path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+    path: '/bot' + TELEGRAM_BOT_TOKEN + '/sendMessage',
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    }
   }, (res) => console.log('Telegram text sent, status:', res.statusCode));
-  req.on('error', (e) => console.error('Telegram error:', e.message));
+  req.on('error', e => console.error('Telegram error:', e.message));
   req.write(body);
   req.end();
 }
@@ -190,27 +150,13 @@ function sendTelegramPhoto(chatId, base64Data, caption) {
     const b64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
     const imageBuffer = Buffer.from(b64, 'base64');
     const boundary = 'boundary' + Date.now();
-    const captionText = (caption || '').substring(0, 200);
 
     const parts = [];
-    parts.push(Buffer.from(
-      '--' + boundary + '\r\n' +
-      'Content-Disposition: form-data; name="chat_id"\r\n\r\n' +
-      chatId + '\r\n'
-    ));
-    parts.push(Buffer.from(
-      '--' + boundary + '\r\n' +
-      'Content-Disposition: form-data; name="caption"\r\n\r\n' +
-      captionText + '\r\n'
-    ));
-    parts.push(Buffer.from(
-      '--' + boundary + '\r\n' +
-      'Content-Disposition: form-data; name="photo"; filename="photo.jpg"\r\n' +
-      'Content-Type: image/jpeg\r\n\r\n'
-    ));
+    parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n' + chatId + '\r\n'));
+    parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="caption"\r\n\r\n' + (caption||'').substring(0,200) + '\r\n'));
+    parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="photo"; filename="photo.jpg"\r\nContent-Type: image/jpeg\r\n\r\n'));
     parts.push(imageBuffer);
     parts.push(Buffer.from('\r\n--' + boundary + '--\r\n'));
-
     const body = Buffer.concat(parts);
 
     const req = https.request({
@@ -235,4 +181,33 @@ function sendTelegramPhoto(chatId, base64Data, caption) {
   } catch(e) {
     console.error('Telegram photo exception:', e.message);
   }
+}
+
+function sendEmail(to, deviceName, htmlBody) {
+  if (!SENDGRID_KEY || !to) {
+    console.log('Email skip - no SendGrid key or recipient');
+    return;
+  }
+  const data = JSON.stringify({
+    personalizations: [{ to: [{ email: to }] }],
+    from: { email: GMAIL_USER || 'noreply@dost.app' },
+    subject: 'DOST Alert — ' + deviceName,
+    content: [{ type: 'text/html', value: htmlBody }]
+  });
+  const req = https.request({
+    hostname: 'api.sendgrid.com',
+    path: '/v3/mail/send',
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + SENDGRID_KEY,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data)
+    }
+  }, (res) => {
+    if (res.statusCode === 202) console.log('Email sent to:', to);
+    else console.error('Email error status:', res.statusCode);
+  });
+  req.on('error', e => console.error('Email error:', e.message));
+  req.write(data);
+  req.end();
 }
